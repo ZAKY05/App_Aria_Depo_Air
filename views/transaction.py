@@ -274,7 +274,9 @@ class TransactionView(tk.Frame):
         for p in products:
             if search and search not in p['name'].lower():
                 continue
-            if p['stock'] <= 0:
+            # Produk isi ulang selalu tampil (stok tak terbatas)
+            is_refill = db.is_water_refill_product(p['name'], p.get('category', ''))
+            if not is_refill and p['stock'] <= 0:
                 continue
 
             card = tk.Frame(self.products_container, bg=COLORS['bg_light'], padx=12, pady=10,
@@ -292,8 +294,13 @@ class TransactionView(tk.Frame):
                                     fg=COLORS['primary'], anchor='w', cursor='hand2')
             price_label.pack(fill='x')
 
-            stock_color = COLORS['success'] if p['stock'] >= 10 else COLORS['warning']
-            stock_label = tk.Label(card, text=f"Stok: {p['stock']} {p['unit']}",
+            if is_refill:
+                stock_color = COLORS['info']
+                stock_text = f"Stok: ∞ (Tak Terbatas)"
+            else:
+                stock_color = COLORS['success'] if p['stock'] >= 10 else COLORS['warning']
+                stock_text = f"Stok: {p['stock']} {p['unit']}"
+            stock_label = tk.Label(card, text=stock_text,
                                     font=FONTS['small'], bg=COLORS['bg_light'],
                                     fg=stock_color, anchor='w', cursor='hand2')
             stock_label.pack(fill='x')
@@ -321,11 +328,12 @@ class TransactionView(tk.Frame):
 
     def _add_to_cart(self, product):
         """Tambah produk ke keranjang"""
+        is_refill = db.is_water_refill_product(product['name'], product.get('category', ''))
         # Cek apakah sudah ada di keranjang
         for item in self.cart:
             if item['product_id'] == product['id']:
-                # Cek stok
-                if item['quantity'] >= product['stock']:
+                # Cek stok (skip untuk produk isi ulang)
+                if not is_refill and item['quantity'] >= product['stock']:
                     messagebox.showwarning("Peringatan", f"Stok {product['name']} tidak mencukupi!")
                     return
                 item['quantity'] += 1
@@ -340,7 +348,7 @@ class TransactionView(tk.Frame):
             'quantity': 1,
             'unit_price': product['sell_price'],
             'subtotal': product['sell_price'],
-            'max_stock': product['stock'],
+            'max_stock': 999999 if is_refill else product['stock'],
             'courier_fee_per_unit': int(product.get('courier_fee_per_unit', 0) or 0)
         })
         self._refresh_cart()

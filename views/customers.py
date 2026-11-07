@@ -494,34 +494,63 @@ class CustomersView(tk.Frame):
         values = self.tree.item(selected[0])['values']
         customer_id = values[0]
         customer_name = values[1]
+        customer = db.get_customer_by_id(customer_id)
+        ledger = db.get_customer_debt_ledger(customer_id)
         payments = db.get_debt_payments(customer_id)
 
         dialog = tk.Toplevel(self)
         dialog.title(f"Riwayat Hutang - {customer_name}")
-        dialog.geometry("640x500")
-        dialog.minsize(550, 420)
+        dialog.geometry("820x600")
+        dialog.minsize(700, 500)
         dialog.resizable(True, True)
         dialog.configure(bg=COLORS['white'])
         dialog.transient(self)
         dialog.grab_set()
 
         dialog.update_idletasks()
-        x = (dialog.winfo_screenwidth() // 2) - 320
-        y = (dialog.winfo_screenheight() // 2) - 250
+        x = (dialog.winfo_screenwidth() // 2) - 410
+        y = (dialog.winfo_screenheight() // 2) - 300
         dialog.geometry(f'+{x}+{y}')
 
-        tk.Label(dialog, text="Riwayat Pembayaran Hutang", font=FONTS['subtitle'],
+        tk.Label(dialog, text="📋  Riwayat Hutang Pelanggan", font=FONTS['subtitle'],
                  bg=COLORS['white'], fg=COLORS['primary_dark']).pack(side='top', pady=(15, 5))
         tk.Label(dialog, text=f"Pelanggan: {customer_name}", font=FONTS['body'],
-                 bg=COLORS['white'], fg=COLORS['text_light']).pack(side='top', pady=(0, 10))
+                 bg=COLORS['white'], fg=COLORS['text_light']).pack(side='top', pady=(0, 5))
 
-        customer = db.get_customer_by_id(customer_id)
-        debt_label = tk.Label(
-            dialog, text=f"Sisa Hutang: {format_currency(customer['debt_amount'])}",
-            font=FONTS['heading'], bg=COLORS['white'],
-            fg=COLORS['danger'] if customer['debt_amount'] > 0 else COLORS['success']
-        )
-        debt_label.pack(side='top', pady=(0, 10))
+        # Summary cards
+        summary_frame = tk.Frame(dialog, bg=COLORS['white'], padx=20)
+        summary_frame.pack(side='top', fill='x', pady=(0, 10))
+        summary_frame.columnconfigure((0, 1, 2), weight=1)
+
+        # Total hutang
+        debt_card = tk.Frame(summary_frame, bg=COLORS['danger_bg'], padx=15, pady=10,
+                              highlightbackground=COLORS['border_light'], highlightthickness=1)
+        debt_card.grid(row=0, column=0, sticky='nsew', padx=(0, 5))
+        tk.Label(debt_card, text="Sisa Hutang", font=FONTS['small_bold'],
+                 bg=COLORS['danger_bg'], fg=COLORS['text_light']).pack(anchor='w')
+        tk.Label(debt_card, text=format_currency(customer['debt_amount']),
+                 font=FONTS['heading'], bg=COLORS['danger_bg'],
+                 fg=COLORS['danger'] if customer['debt_amount'] > 0 else COLORS['success']).pack(anchor='w')
+
+        # Total transaksi hutang
+        total_debt_trx = sum(e['amount'] for e in ledger if e['entry_type'] == 'hutang')
+        trx_card = tk.Frame(summary_frame, bg=COLORS['warning_bg'], padx=15, pady=10,
+                             highlightbackground=COLORS['border_light'], highlightthickness=1)
+        trx_card.grid(row=0, column=1, sticky='nsew', padx=5)
+        tk.Label(trx_card, text="Total Hutang Masuk", font=FONTS['small_bold'],
+                 bg=COLORS['warning_bg'], fg=COLORS['text_light']).pack(anchor='w')
+        tk.Label(trx_card, text=format_currency(total_debt_trx),
+                 font=FONTS['heading'], bg=COLORS['warning_bg'], fg=COLORS['warning']).pack(anchor='w')
+
+        # Total pembayaran
+        total_paid = sum(e['amount'] for e in ledger if e['entry_type'] == 'bayar')
+        paid_card = tk.Frame(summary_frame, bg=COLORS['success_bg'], padx=15, pady=10,
+                              highlightbackground=COLORS['border_light'], highlightthickness=1)
+        paid_card.grid(row=0, column=2, sticky='nsew', padx=(5, 0))
+        tk.Label(paid_card, text="Total Sudah Dibayar", font=FONTS['small_bold'],
+                 bg=COLORS['success_bg'], fg=COLORS['text_light']).pack(anchor='w')
+        tk.Label(paid_card, text=format_currency(total_paid),
+                 font=FONTS['heading'], bg=COLORS['success_bg'], fg=COLORS['success']).pack(anchor='w')
 
         sep = tk.Frame(dialog, bg=COLORS['border_light'], height=1)
         sep.pack(side='top', fill='x', padx=20)
@@ -530,36 +559,84 @@ class CustomersView(tk.Frame):
         btn_box = tk.Frame(dialog, bg=COLORS['white'])
         btn_box.pack(side='bottom', fill='x', padx=20, pady=15)
 
-        if payments:
-            table_frame = tk.Frame(dialog, bg=COLORS['white'])
-            table_frame.pack(side='top', fill='both', expand=True, padx=20, pady=10)
+        if ledger:
+            # Tab notebook untuk tampilan ledger dan pembayaran
+            tk.Label(dialog, text="Rincian Kronologis (Hutang Masuk & Pembayaran)", font=FONTS['body_bold'],
+                     bg=COLORS['white'], fg=COLORS['text_dark']).pack(side='top', anchor='w', padx=20, pady=(10, 5))
 
-            cols = ('date', 'amount', 'user', 'notes')
-            tree = ttk.Treeview(table_frame, columns=cols, show='headings', height=10)
+            table_frame = tk.Frame(dialog, bg=COLORS['white'])
+            table_frame.pack(side='top', fill='both', expand=True, padx=20, pady=(0, 10))
+
+            cols = ('date', 'type', 'reference', 'debit', 'credit', 'balance', 'user', 'notes')
+            tree = ttk.Treeview(table_frame, columns=cols, show='headings', height=12)
             tree.heading('date', text='Tanggal')
-            tree.heading('amount', text='Jumlah')
-            tree.heading('user', text='Dicatat oleh')
+            tree.heading('type', text='Jenis')
+            tree.heading('reference', text='Referensi')
+            tree.heading('debit', text='Hutang (+)')
+            tree.heading('credit', text='Bayar (−)')
+            tree.heading('balance', text='Sisa Hutang')
+            tree.heading('user', text='Oleh')
             tree.heading('notes', text='Catatan')
 
-            tree.column('date', width=140, anchor='center')
-            tree.column('amount', width=130, anchor='e')
-            tree.column('user', width=120, anchor='center')
-            tree.column('notes', width=140, anchor='w')
+            tree.column('date', width=130, anchor='center')
+            tree.column('type', width=90, anchor='center')
+            tree.column('reference', width=110, anchor='center')
+            tree.column('debit', width=100, anchor='e')
+            tree.column('credit', width=100, anchor='e')
+            tree.column('balance', width=100, anchor='e')
+            tree.column('user', width=90, anchor='center')
+            tree.column('notes', width=100, anchor='w')
 
-            for p in payments:
+            # Tag warna
+            tree.tag_configure('hutang', background=COLORS['danger_bg'])
+            tree.tag_configure('bayar', background=COLORS['success_bg'])
+            tree.tag_configure('batal_hutang', background=COLORS['warning_bg'])
+
+            for entry in ledger:
+                date_str = entry['entry_date'][:19] if entry['entry_date'] else ''
+
+                if entry['entry_type'] == 'hutang':
+                    type_str = "🔴 Hutang"
+                    debit_str = format_currency(entry['amount'])
+                    credit_str = ""
+                    ref_str = entry['reference'] or ""
+                    tag = 'hutang'
+                elif entry['entry_type'] == 'bayar':
+                    type_str = "🟢 Bayar"
+                    debit_str = ""
+                    credit_str = format_currency(entry['amount'])
+                    ref_str = "Pembayaran"
+                    tag = 'bayar'
+                elif entry['entry_type'] == 'batal_hutang':
+                    type_str = "🟡 Batal"
+                    debit_str = ""
+                    credit_str = format_currency(entry['amount'])
+                    ref_str = entry['reference'] or ""
+                    tag = 'batal_hutang'
+                else:
+                    continue
+
                 tree.insert('', 'end', values=(
-                    p['created_at'][:19] if p['created_at'] else '',
-                    format_currency(p['amount']),
-                    p['user_name'],
-                    p['notes'] or '-'
-                ))
-            tree.pack(fill='both', expand=True)
+                    date_str,
+                    type_str,
+                    ref_str,
+                    debit_str,
+                    credit_str,
+                    format_currency(entry['running_balance']),
+                    entry['user_name'],
+                    entry['notes'] or '-'
+                ), tags=(tag,))
+
+            scrollbar = ttk.Scrollbar(table_frame, orient='vertical', command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+            tree.pack(side='left', fill='both', expand=True)
+            scrollbar.pack(side='right', fill='y')
         else:
-            tk.Label(dialog, text="Belum ada riwayat pembayaran", font=FONTS['body'],
+            tk.Label(dialog, text="Belum ada riwayat hutang / pembayaran", font=FONTS['body'],
                      bg=COLORS['white'], fg=COLORS['text_light']).pack(side='top', pady=30)
 
         def export_to_excel():
-            if not payments:
+            if not ledger:
                 messagebox.showinfo("Info", "Tidak ada data riwayat untuk diunduh.", parent=dialog)
                 return
             file_path = filedialog.asksaveasfilename(
@@ -577,34 +654,57 @@ class CustomersView(tk.Frame):
                 wb = openpyxl.Workbook()
                 ws = wb.active
                 ws.title = "Riwayat Hutang"
-                ws.append(["RIWAYAT PEMBAYARAN HUTANG"])
+                ws.append(["RIWAYAT HUTANG PELANGGAN"])
                 ws.append([f"Pelanggan: {customer_name}"])
                 ws.append([f"Sisa Hutang Saat Ini: {format_currency(customer['debt_amount'])}"])
+                ws.append([f"Total Hutang Masuk: {format_currency(total_debt_trx)}"])
+                ws.append([f"Total Sudah Dibayar: {format_currency(total_paid)}"])
                 ws.append([])
-                headers = ["No", "Tanggal & Waktu", "Jumlah Bayar (Rp)", "Dicatat Oleh", "Catatan"]
+                headers = ["No", "Tanggal", "Jenis", "Referensi", "Hutang (+)", "Bayar (−)", "Sisa Hutang", "Oleh", "Catatan"]
                 ws.append(headers)
+                header_row = 7
                 header_fill = PatternFill(start_color="1A5276", end_color="1A5276", fill_type="solid")
                 header_font = Font(name="Segoe UI", size=11, bold=True, color="FFFFFF")
                 for col_idx in range(1, len(headers) + 1):
-                    cell = ws.cell(row=5, column=col_idx)
+                    cell = ws.cell(row=header_row, column=col_idx)
                     cell.fill = header_fill
                     cell.font = header_font
-                    cell.alignment = Alignment(horizontal="center" if col_idx != 3 and col_idx != 5 else "right")
+                    cell.alignment = Alignment(horizontal="center")
 
-                total_paid = 0
-                for i, p in enumerate(payments, 1):
-                    total_paid += p['amount']
+                for i, entry in enumerate(ledger, 1):
+                    if entry['entry_type'] == 'hutang':
+                        jenis = "Hutang Baru"
+                        debit = entry['amount']
+                        credit = ""
+                    elif entry['entry_type'] == 'bayar':
+                        jenis = "Pembayaran"
+                        debit = ""
+                        credit = entry['amount']
+                    elif entry['entry_type'] == 'batal_hutang':
+                        jenis = "Batal Hutang"
+                        debit = ""
+                        credit = entry['amount']
+                    else:
+                        continue
+
                     ws.append([
                         i,
-                        p['created_at'][:19] if p['created_at'] else '',
-                        p['amount'],
-                        p['user_name'],
-                        p['notes'] or '-'
+                        entry['entry_date'][:19] if entry['entry_date'] else '',
+                        jenis,
+                        entry['reference'] or '-',
+                        debit,
+                        credit,
+                        entry['running_balance'],
+                        entry['user_name'],
+                        entry['notes'] or '-'
                     ])
+
                 ws.append([])
-                ws.append(["", "TOTAL DIBAYAR", total_paid, "", ""])
-                ws.cell(row=ws.max_row, column=2).font = Font(bold=True)
-                ws.cell(row=ws.max_row, column=3).font = Font(bold=True)
+                ws.append(["", "", "", "TOTAL", total_debt_trx, total_paid, customer['debt_amount'], "", ""])
+                ws.cell(row=ws.max_row, column=4).font = Font(bold=True)
+                ws.cell(row=ws.max_row, column=5).font = Font(bold=True)
+                ws.cell(row=ws.max_row, column=6).font = Font(bold=True)
+                ws.cell(row=ws.max_row, column=7).font = Font(bold=True)
 
                 for col in ws.columns:
                     max_len = max(len(str(cell.value or '')) for cell in col)

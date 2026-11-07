@@ -378,6 +378,12 @@ def init_database():
     conn.commit()
     conn.close()
 
+    # Sinkronisasi harga flow meter hari ini dengan data produk terkini
+    try:
+        sync_today_water_meter_prices()
+    except Exception:
+        pass
+
 
 # ==================== USER OPERATIONS ====================
 
@@ -558,6 +564,11 @@ def add_product(name, category, buy_price, sell_price, stock, unit, courier_fee_
     conn.commit()
     product_id = cursor.lastrowid
     conn.close()
+    if is_water_refill_product(name, category):
+        try:
+            sync_today_water_meter_prices()
+        except Exception:
+            pass
     return product_id
 
 
@@ -572,6 +583,11 @@ def update_product(product_id, name, category, buy_price, sell_price, stock, uni
     )
     conn.commit()
     conn.close()
+    if is_water_refill_product(name, category):
+        try:
+            sync_today_water_meter_prices()
+        except Exception:
+            pass
 
 
 def delete_product(product_id):
@@ -711,6 +727,84 @@ def get_debt_payments(customer_id):
     return payments
 
 
+def get_customer_debt_ledger(customer_id):
+    """
+    Mengambil riwayat lengkap hutang pelanggan (kronologis):
+    - Transaksi hutang baru (menambah hutang)
+    - Pembayaran hutang (mengurangi hutang)
+    Dikembalikan dalam urutan tanggal terlama ke terbaru dengan running balance.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Ambil transaksi hutang
+    cursor.execute("""
+        SELECT 
+            t.id as ref_id,
+            'hutang' as entry_type,
+            t.created_at as entry_date,
+            t.invoice_number as reference,
+            t.total as amount,
+            u.full_name as user_name,
+            t.notes
+        FROM transactions t
+        JOIN users u ON t.user_id = u.id
+        WHERE t.customer_id = ? AND t.payment_method = 'hutang' AND t.status = 'completed'
+    """, (customer_id,))
+    debt_entries = [dict(row) for row in cursor.fetchall()]
+
+    # Ambil transaksi hutang yang dibatalkan (untuk dikurangi)
+    cursor.execute("""
+        SELECT
+            t.id as ref_id,
+            'batal_hutang' as entry_type,
+            t.created_at as entry_date,
+            t.invoice_number as reference,
+            t.total as amount,
+            u.full_name as user_name,
+            t.notes
+        FROM transactions t
+        JOIN users u ON t.user_id = u.id
+        WHERE t.customer_id = ? AND t.payment_method = 'hutang' AND t.status = 'batal'
+    """, (customer_id,))
+    cancel_entries = [dict(row) for row in cursor.fetchall()]
+
+    # Ambil pembayaran hutang
+    cursor.execute("""
+        SELECT 
+            dp.id as ref_id,
+            'bayar' as entry_type,
+            dp.payment_date as entry_date,
+            '' as reference,
+            dp.amount as amount,
+            u.full_name as user_name,
+            dp.notes
+        FROM debt_payments dp
+        JOIN users u ON dp.user_id = u.id
+        WHERE dp.customer_id = ?
+    """, (customer_id,))
+    payment_entries = [dict(row) for row in cursor.fetchall()]
+
+    conn.close()
+
+    # Gabungkan dan urutkan berdasarkan tanggal
+    all_entries = debt_entries + cancel_entries + payment_entries
+    all_entries.sort(key=lambda x: x['entry_date'] or '')
+
+    # Hitung running balance
+    running_balance = 0
+    for entry in all_entries:
+        if entry['entry_type'] == 'hutang':
+            running_balance += entry['amount']
+        elif entry['entry_type'] == 'bayar':
+            running_balance -= entry['amount']
+        elif entry['entry_type'] == 'batal_hutang':
+            running_balance -= entry['amount']
+        entry['running_balance'] = max(0, running_balance)
+
+    return all_entries
+
+
 # ==================== TRANSACTION OPERATIONS ====================
 
 def generate_invoice_number():
@@ -781,11 +875,14 @@ def create_transaction(customer_id, user_id, items, payment_method, paid_amount,
 
         total_courier_wage = 0
         for item in items:
-            cursor.execute("SELECT name, stock, courier_fee_per_unit FROM products WHERE id = ?", (item['product_id'],))
+            cursor.execute("SELECT name, stock, category, courier_fee_per_unit FROM products WHERE id = ?", (item['product_id'],))
             product = cursor.fetchone()
             if not product:
                 raise ValueError(f"Produk ID {item['product_id']} tidak ditemukan!")
-            if product['stock'] < item['quantity']:
+
+            # Produk Isi Ulang / Bio / RO memiliki stok tak terbatas
+            is_refill = is_water_refill_product(product['name'], product['category'] or '')
+            if not is_refill and product['stock'] < item['quantity']:
                 raise ValueError(f"Stok untuk {product['name']} tidak mencukupi (tersedia {product['stock']}, diminta {item['quantity']})")
 
             fee_per_unit = product['courier_fee_per_unit'] or 0
@@ -800,11 +897,12 @@ def create_transaction(customer_id, user_id, items, payment_method, paid_amount,
                  item['quantity'] * item['unit_price'])
             )
 
-            # Kurangi stok
-            cursor.execute(
-                "UPDATE products SET stock = stock - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                (item['quantity'], item['product_id'])
-            )
+            # Kurangi stok (skip untuk produk isi ulang - stok tak terbatas)
+            if not is_refill:
+                cursor.execute(
+                    "UPDATE products SET stock = stock - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (item['quantity'], item['product_id'])
+                )
 
         # Jika hutang, tambahkan ke hutang pelanggan (upah kurir tetap tercatat)
         if payment_method == 'hutang' and customer_id:
@@ -900,11 +998,18 @@ def cancel_transaction(transaction_id, user_role='owner'):
         # Ubah status transaksi menjadi 'batal'
         cursor.execute("UPDATE transactions SET status = 'batal' WHERE id = ?", (transaction_id,))
 
-        # Kembalikan stok produk
-        cursor.execute("SELECT product_id, quantity FROM transaction_items WHERE transaction_id = ?", (transaction_id,))
+        # Kembalikan stok produk (skip untuk produk isi ulang - stok tak terbatas)
+        cursor.execute("""
+            SELECT ti.product_id, ti.product_name, ti.quantity, 
+                   COALESCE(p.category, '') as category
+            FROM transaction_items ti
+            LEFT JOIN products p ON ti.product_id = p.id
+            WHERE ti.transaction_id = ?
+        """, (transaction_id,))
         items = cursor.fetchall()
         for item in items:
-            cursor.execute("UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (item['quantity'], item['product_id']))
+            if not is_water_refill_product(item['product_name'], item['category']):
+                cursor.execute("UPDATE products SET stock = stock + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (item['quantity'], item['product_id']))
 
         # Jika hutang, kurangi hutang pelanggan
         if trx['payment_method'] == 'hutang' and trx['customer_id']:
@@ -1881,11 +1986,184 @@ def get_courier_payments(courier_id=None):
     return payments
 
 
+def get_customer_debt_ledger(customer_id):
+    """
+    Mengambil riwayat lengkap hutang pelanggan (kronologis):
+    - Transaksi hutang baru (menambah hutang)
+    - Pembayaran hutang (mengurangi hutang)
+    Dikembalikan dalam urutan tanggal terlama ke terbaru dengan running balance.
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    # Ambil transaksi hutang
+    cursor.execute("""
+        SELECT 
+            t.id as ref_id,
+            'hutang' as entry_type,
+            t.created_at as entry_date,
+            t.invoice_number as reference,
+            t.total as amount,
+            u.full_name as user_name,
+            t.notes
+        FROM transactions t
+        JOIN users u ON t.user_id = u.id
+        WHERE t.customer_id = ? AND t.payment_method = 'hutang' AND t.status = 'completed'
+    """, (customer_id,))
+    debt_entries = [dict(row) for row in cursor.fetchall()]
+
+    # Ambil transaksi hutang yang dibatalkan (untuk dikurangi)
+    cursor.execute("""
+        SELECT
+            t.id as ref_id,
+            'batal_hutang' as entry_type,
+            t.created_at as entry_date,
+            t.invoice_number as reference,
+            t.total as amount,
+            u.full_name as user_name,
+            t.notes
+        FROM transactions t
+        JOIN users u ON t.user_id = u.id
+        WHERE t.customer_id = ? AND t.payment_method = 'hutang' AND t.status = 'batal'
+    """, (customer_id,))
+    cancel_entries = [dict(row) for row in cursor.fetchall()]
+
+    # Ambil pembayaran hutang
+    cursor.execute("""
+        SELECT 
+            dp.id as ref_id,
+            'bayar' as entry_type,
+            dp.payment_date as entry_date,
+            '' as reference,
+            dp.amount as amount,
+            u.full_name as user_name,
+            dp.notes
+        FROM debt_payments dp
+        JOIN users u ON dp.user_id = u.id
+        WHERE dp.customer_id = ?
+    """, (customer_id,))
+    payment_entries = [dict(row) for row in cursor.fetchall()]
+
+    conn.close()
+
+    # Gabungkan dan urutkan berdasarkan tanggal
+    all_entries = debt_entries + cancel_entries + payment_entries
+    all_entries.sort(key=lambda x: x['entry_date'] or '')
+
+    # Hitung running balance
+    running_balance = 0
+    for entry in all_entries:
+        if entry['entry_type'] == 'hutang':
+            running_balance += entry['amount']
+        elif entry['entry_type'] == 'bayar':
+            running_balance -= entry['amount']
+        elif entry['entry_type'] == 'batal_hutang':
+            running_balance -= entry['amount']
+        entry['running_balance'] = max(0, running_balance)
+
+    return all_entries
+
+
 # ==================== WATER METER OPERATIONS (FLOW METER) ====================
 
+def get_water_prices_from_products():
+    """
+    Mengambil harga per galon air Bio dan RO secara otomatis dari tabel products.
+    Kriteria pencocokan:
+      - Bio: produk aktif dengan nama mengandung kata 'bio'
+      - RO: produk aktif dengan nama mengandung kata 'ro' (kata utuh/pemisah) atau 'osmosis'
+    Prioritas diberikan kepada produk berkategori 'Isi Ulang'.
+    Jika tidak ditemukan produk aktif yang cocok, fallback ke default (Bio: 5000.0, RO: 10000.0).
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, name, category, sell_price 
+        FROM products 
+        WHERE is_active = 1 
+        ORDER BY CASE WHEN LOWER(category) = 'isi ulang' THEN 0 ELSE 1 END, id DESC
+    """)
+    products = cursor.fetchall()
+    conn.close()
+
+    bio_price = None
+    ro_price = None
+    bio_product_name = None
+    ro_product_name = None
+
+    import re
+    for p in products:
+        p_name = (p['name'] or '').strip()
+        name_lower = p_name.lower()
+        price = float(p['sell_price'] or 0)
+        if price <= 0:
+            continue
+
+        if 'bio' in name_lower and bio_price is None:
+            bio_price = price
+            bio_product_name = p_name
+        elif (re.search(r'\bro\b', name_lower) or '(ro)' in name_lower or 'osmosis' in name_lower) and ro_price is None:
+            ro_price = price
+            ro_product_name = p_name
+
+    if bio_price is None:
+        bio_price = 5000.0
+    if ro_price is None:
+        ro_price = 10000.0
+
+    return {
+        'bio_price': bio_price,
+        'ro_price': ro_price,
+        'bio_product_name': bio_product_name,
+        'ro_product_name': ro_product_name,
+    }
+
+
+def sync_today_water_meter_prices(target_date=None):
+    """
+    Sinkronisasi otomatis harga Bio dan RO pada catatan meteran (water_meters)
+    dengan harga jual terbaru dari tabel products.
+    Menghitung ulang bio_revenue, ro_revenue, dan total_revenue agar laporan keuangan selalu akurat.
+    """
+    prices = get_water_prices_from_products()
+    bio_price = prices['bio_price']
+    ro_price = prices['ro_price']
+    date_str = target_date or datetime.now().strftime("%Y-%m-%d")
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM water_meters WHERE record_date = ?", (date_str,))
+    rows = cursor.fetchall()
+    for row in rows:
+        b_gal = row['bio_gallons']
+        r_gal = row['ro_gallons']
+        b_rev = round(b_gal * bio_price)
+        r_rev = round(r_gal * ro_price)
+        tot_rev = b_rev + r_rev
+        cursor.execute("""
+            UPDATE water_meters SET
+                bio_price_per_gallon = ?,
+                bio_revenue = ?,
+                ro_price_per_gallon = ?,
+                ro_revenue = ?,
+                total_revenue = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (bio_price, b_rev, ro_price, r_rev, tot_rev, row['id']))
+    conn.commit()
+    conn.close()
+
+
 def calculate_water_meter_values(bio_meter_start, bio_meter_end, ro_meter_start, ro_meter_end,
-                                 bio_lpg=21.5, bio_price=5000.0, ro_lpg=20.5, ro_price=10000.0, status='closed'):
-    """Helper untuk menghitung liter, galon, dan omzet air secara akurat"""
+                                 bio_lpg=21.5, bio_price=None, ro_lpg=20.5, ro_price=None, status='closed'):
+    """Helper untuk menghitung liter, galon, dan omzet air secara akurat (otomatis sinkron harga produk)"""
+    if bio_price is None or ro_price is None:
+        synced = get_water_prices_from_products()
+        if bio_price is None:
+            bio_price = synced['bio_price']
+        if ro_price is None:
+            ro_price = synced['ro_price']
+
     if status == 'open':
         bio_liters = 0.0
         bio_gallons = 0.0
@@ -1921,9 +2199,16 @@ def calculate_water_meter_values(bio_meter_start, bio_meter_end, ro_meter_start,
 
 def add_water_meter(record_date, shift_name, user_id, user_name,
                     bio_meter_start, bio_meter_end, ro_meter_start, ro_meter_end,
-                    bio_lpg=21.5, bio_price=5000.0, ro_lpg=20.5, ro_price=10000.0,
+                    bio_lpg=21.5, bio_price=None, ro_lpg=20.5, ro_price=None,
                     status='closed', notes=''):
-    """Menambah catatan flow meter air baru"""
+    """Menambah catatan flow meter air baru (otomatis sinkron harga produk)"""
+    if bio_price is None or ro_price is None:
+        synced = get_water_prices_from_products()
+        if bio_price is None:
+            bio_price = synced['bio_price']
+        if ro_price is None:
+            ro_price = synced['ro_price']
+
     vals = calculate_water_meter_values(
         bio_meter_start, bio_meter_end, ro_meter_start, ro_meter_end,
         bio_lpg, bio_price, ro_lpg, ro_price, status
@@ -1952,9 +2237,16 @@ def add_water_meter(record_date, shift_name, user_id, user_name,
 
 def update_water_meter(meter_id, record_date, shift_name, user_name,
                        bio_meter_start, bio_meter_end, ro_meter_start, ro_meter_end,
-                       bio_lpg=21.5, bio_price=5000.0, ro_lpg=20.5, ro_price=10000.0,
+                       bio_lpg=21.5, bio_price=None, ro_lpg=20.5, ro_price=None,
                        status='closed', notes=''):
-    """Update catatan flow meter air"""
+    """Update catatan flow meter air (otomatis sinkron harga produk)"""
+    if bio_price is None or ro_price is None:
+        synced = get_water_prices_from_products()
+        if bio_price is None:
+            bio_price = synced['bio_price']
+        if ro_price is None:
+            ro_price = synced['ro_price']
+
     vals = calculate_water_meter_values(
         bio_meter_start, bio_meter_end, ro_meter_start, ro_meter_end,
         bio_lpg, bio_price, ro_lpg, ro_price, status

@@ -5,6 +5,7 @@ Products View - Halaman manajemen produk (CRUD)
 import tkinter as tk
 from tkinter import ttk, messagebox
 from styles import COLORS, FONTS, ICONS, format_currency
+import database as db
 
 
 class ProductsView(tk.Frame):
@@ -134,6 +135,7 @@ class ProductsView(tk.Frame):
         # Tag untuk stok rendah
         self.tree.tag_configure('low_stock', background=COLORS['warning_bg'])
         self.tree.tag_configure('no_stock', background=COLORS['danger_bg'])
+        self.tree.tag_configure('refill', background=COLORS['info_bg'])
 
         # Context menu
         self.tree.bind('<Double-1>', lambda e: self._show_edit_dialog())
@@ -148,7 +150,6 @@ class ProductsView(tk.Frame):
 
     def refresh_data(self):
         """Refresh data tabel"""
-        import database as db
         for item in self.tree.get_children():
             self.tree.delete(item)
 
@@ -159,18 +160,26 @@ class ProductsView(tk.Frame):
         for p in products:
             if search and search not in p['name'].lower() and search not in p['category'].lower():
                 continue
+
+            is_refill = db.is_water_refill_product(p['name'], p.get('category', ''))
+
             tags = ()
-            if p['stock'] == 0:
-                tags = ('no_stock',)
-            elif p['stock'] < 10:
-                tags = ('low_stock',)
+            if is_refill:
+                stock_display = "∞"
+                tags = ('refill',)
+            else:
+                stock_display = p['stock']
+                if p['stock'] == 0:
+                    tags = ('no_stock',)
+                elif p['stock'] < 10:
+                    tags = ('low_stock',)
 
             self.tree.insert('', 'end', values=(
                 p['id'], p['name'], p['category'],
                 format_currency(p['buy_price']),
                 format_currency(p['sell_price']),
                 format_currency(p.get('courier_fee_per_unit', 0) or 0),
-                p['stock'], p['unit']
+                stock_display, p['unit']
             ), tags=tags)
             count += 1
 
@@ -194,8 +203,8 @@ class ProductsView(tk.Frame):
         """Dialog form produk"""
         dialog = tk.Toplevel(self)
         dialog.title(title)
-        dialog.geometry("480x620")
-        dialog.minsize(440, 520)
+        dialog.geometry("480x650")
+        dialog.minsize(440, 550)
         dialog.resizable(True, True)
         dialog.configure(bg=COLORS['white'])
         dialog.transient(self)
@@ -204,7 +213,7 @@ class ProductsView(tk.Frame):
         # Center dialog
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() // 2) - 240
-        y = (dialog.winfo_screenheight() // 2) - 310
+        y = (dialog.winfo_screenheight() // 2) - 325
         dialog.geometry(f'+{x}+{y}')
 
         # Title
@@ -222,6 +231,7 @@ class ProductsView(tk.Frame):
         form.pack(side='top', fill='both', expand=True, pady=10)
 
         fields = {}
+        entries = {}
 
         def add_field(label_text, key, default=""):
             tk.Label(form, text=label_text, font=FONTS['body_bold'],
@@ -233,17 +243,18 @@ class ProductsView(tk.Frame):
             entry.configure(highlightthickness=1, highlightcolor=COLORS['primary'],
                              highlightbackground=COLORS['border'])
             fields[key] = var
+            entries[key] = entry
             return entry
 
         # Populate fields
         add_field("Nama Produk", 'name', values[1] if values else "")
 
-        # Kategori dropdown
+        # Kategori dropdown - tambahkan "Isi Ulang"
         tk.Label(form, text="Kategori", font=FONTS['body_bold'],
                  bg=COLORS['white'], fg=COLORS['text_dark'], anchor='w').pack(fill='x', pady=(6, 2))
         cat_var = tk.StringVar(value=values[2] if values else "Galon")
         cat_combo = ttk.Combobox(form, textvariable=cat_var, font=FONTS['input'],
-                                  values=['Galon', 'Botol', 'Lainnya'], state='readonly')
+                                  values=['Galon', 'Botol', 'Isi Ulang', 'Lainnya'], state='readonly')
         cat_combo.pack(fill='x', ipady=4)
         fields['category'] = cat_var
 
@@ -255,24 +266,80 @@ class ProductsView(tk.Frame):
                   str(values[5]).replace('Rp ', '').replace('.', '') if values else "0")
         add_field("Stok", 'stock', values[6] if values else "0")
 
-        # Satuan dropdown
+        # Label info untuk produk isi ulang
+        refill_info = tk.Label(form, text="ℹ️  Produk Isi Ulang: Harga Beli = 0, Stok = Tak Terbatas",
+                               font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['info'])
+        # Tidak di-pack dulu, hanya muncul ketika aktif
+
+        # Satuan dropdown - FIXED styling
         tk.Label(form, text="Satuan", font=FONTS['body_bold'],
                  bg=COLORS['white'], fg=COLORS['text_dark'], anchor='w').pack(fill='x', pady=(6, 2))
+
+        # Frame pembungkus agar Combobox satuan konsisten
+        unit_frame = tk.Frame(form, bg=COLORS['white'])
+        unit_frame.pack(fill='x')
+
         unit_var = tk.StringVar(value=values[7] if values else "galon")
-        unit_combo = ttk.Combobox(form, textvariable=unit_var, font=FONTS['input'],
+        unit_combo = ttk.Combobox(unit_frame, textvariable=unit_var, font=FONTS['input'],
                                   values=['galon', 'botol', 'pcs', 'dus', 'liter'], state='readonly')
         unit_combo.pack(fill='x', ipady=4)
+
+        # Style Combobox agar konsisten dengan field lainnya
+        style = ttk.Style()
+        style.configure('Product.TCombobox', padding=5)
+        cat_combo.configure(style='Product.TCombobox')
+        unit_combo.configure(style='Product.TCombobox')
+
         fields['unit'] = unit_var
+
+        def _check_refill(*args):
+            """Cek apakah produk isi ulang, jika ya kunci harga beli dan stok"""
+            name_val = fields['name'].get().strip()
+            cat_val = fields['category'].get()
+            is_refill = db.is_water_refill_product(name_val, cat_val)
+
+            if is_refill:
+                fields['buy_price'].set("0")
+                entries['buy_price'].configure(state='disabled', bg=COLORS['border_light'])
+                fields['stock'].set("0")
+                entries['stock'].configure(state='disabled', bg=COLORS['border_light'])
+                try:
+                    refill_info.pack_forget()
+                    refill_info.pack(fill='x', pady=(4, 0))
+                except Exception:
+                    pass
+            else:
+                entries['buy_price'].configure(state='normal', bg=COLORS['bg_light'])
+                entries['stock'].configure(state='normal', bg=COLORS['bg_light'])
+                try:
+                    refill_info.pack_forget()
+                except Exception:
+                    pass
+
+        # Bind perubahan kategori dan nama produk
+        cat_var.trace_add('write', _check_refill)
+        fields['name'].trace_add('write', _check_refill)
+
+        # Cek awal saat buka dialog (untuk mode edit)
+        _check_refill()
 
         def save():
             try:
-                import database as dbase
                 name = fields['name'].get().strip()
                 category = fields['category'].get()
-                buy_price = float(fields['buy_price'].get().replace('.', '').replace(',', ''))
+
+                # Cek apakah produk isi ulang
+                is_refill = db.is_water_refill_product(name, category)
+
+                if is_refill:
+                    buy_price = 0
+                    stock = 0
+                else:
+                    buy_price = float(fields['buy_price'].get().replace('.', '').replace(',', ''))
+                    stock = int(fields['stock'].get())
+
                 sell_price = float(fields['sell_price'].get().replace('.', '').replace(',', ''))
                 courier_fee = int(fields['courier_fee'].get().replace('.', '').replace(',', '').strip() or 0)
-                stock = int(fields['stock'].get())
                 unit = fields['unit'].get()
 
                 if not name:
@@ -283,11 +350,13 @@ class ProductsView(tk.Frame):
                     return
 
                 if values:
-                    dbase.update_product(values[0], name, category, buy_price, sell_price, stock, unit, courier_fee)
-                    messagebox.showinfo("Berhasil", "Produk berhasil diupdate!")
+                    db.update_product(values[0], name, category, buy_price, sell_price, stock, unit, courier_fee)
+                    sync_info = "\n⚡ Harga Flow Meter & Laporan hari ini otomatis disinkronkan." if is_refill else ""
+                    messagebox.showinfo("Berhasil", f"Produk berhasil diupdate!{sync_info}")
                 else:
-                    dbase.add_product(name, category, buy_price, sell_price, stock, unit, courier_fee)
-                    messagebox.showinfo("Berhasil", "Produk berhasil ditambahkan!")
+                    db.add_product(name, category, buy_price, sell_price, stock, unit, courier_fee)
+                    sync_info = "\n⚡ Harga Flow Meter & Laporan hari ini otomatis disinkronkan." if is_refill else ""
+                    messagebox.showinfo("Berhasil", f"Produk berhasil ditambahkan!{sync_info}")
 
                 dialog.destroy()
                 self.refresh_data()
@@ -312,7 +381,6 @@ class ProductsView(tk.Frame):
 
     def _delete_product(self):
         """Hapus produk"""
-        import database as dbase
         selected = self.tree.selection()
         if not selected:
             messagebox.showwarning("Peringatan", "Pilih produk yang ingin dihapus!")
@@ -320,6 +388,6 @@ class ProductsView(tk.Frame):
 
         values = self.tree.item(selected[0])['values']
         if messagebox.askyesno("Konfirmasi", f"Hapus produk '{values[1]}'?"):
-            dbase.delete_product(values[0])
+            db.delete_product(values[0])
             messagebox.showinfo("Berhasil", "Produk berhasil dihapus!")
             self.refresh_data()

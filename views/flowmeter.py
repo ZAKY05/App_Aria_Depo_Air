@@ -36,6 +36,13 @@ class FlowMeterView(tk.Frame):
         self.refresh_data()
 
     def _build_ui(self):
+        is_owner = self.user.get('role', '') == 'owner'
+        if is_owner:
+            self._build_owner_ui()
+        else:
+            self._build_kasir_ui()
+
+    def _build_owner_ui(self):
         # ===== HEADER =====
         header = tk.Frame(self, bg=COLORS['white'], padx=25, pady=18,
                           highlightbackground=COLORS['border_light'], highlightthickness=1)
@@ -94,9 +101,9 @@ class FlowMeterView(tk.Frame):
         self.bio_card = tk.Frame(summary, bg=COLORS['white'], padx=18, pady=12,
                                  highlightbackground=COLORS['border_light'], highlightthickness=1)
         self.bio_card.grid(row=0, column=0, sticky='nsew', padx=(0, 6))
-        bio_title = "🚰 Air Bio Energi (Rp 5.000)" if is_owner else "🚰 Air Bio Energi"
-        tk.Label(self.bio_card, text=bio_title, font=FONTS['small_bold'],
-                 bg=COLORS['white'], fg=COLORS['primary']).pack(anchor='w')
+        self.bio_card_title = tk.Label(self.bio_card, text="🚰 Air Bio Energi", font=FONTS['small_bold'],
+                                       bg=COLORS['white'], fg=COLORS['primary'])
+        self.bio_card_title.pack(anchor='w')
         self.bio_liters_label = tk.Label(self.bio_card, text="0 Liter", font=FONTS['medium_number'],
                                          bg=COLORS['white'], fg=COLORS['text_dark'])
         self.bio_liters_label.pack(anchor='w', pady=(2, 0))
@@ -108,9 +115,9 @@ class FlowMeterView(tk.Frame):
         self.ro_card = tk.Frame(summary, bg=COLORS['white'], padx=18, pady=12,
                                 highlightbackground=COLORS['border_light'], highlightthickness=1)
         self.ro_card.grid(row=0, column=1, sticky='nsew', padx=3)
-        ro_title = "💧 Air RO (Rp 10.000)" if is_owner else "💧 Air RO"
-        tk.Label(self.ro_card, text=ro_title, font=FONTS['small_bold'],
-                 bg=COLORS['white'], fg=COLORS['info']).pack(anchor='w')
+        self.ro_card_title = tk.Label(self.ro_card, text="💧 Air RO", font=FONTS['small_bold'],
+                                      bg=COLORS['white'], fg=COLORS['info'])
+        self.ro_card_title.pack(anchor='w')
         self.ro_liters_label = tk.Label(self.ro_card, text="0 Liter", font=FONTS['medium_number'],
                                         bg=COLORS['white'], fg=COLORS['text_dark'])
         self.ro_liters_label.pack(anchor='w', pady=(2, 0))
@@ -328,6 +335,292 @@ class FlowMeterView(tk.Frame):
         # Tag styles
         self.tree.tag_configure('open_shift', background='#FFF9C4')  # Kuning lembut untuk shift terbuka
 
+    def _build_kasir_ui(self):
+        """Tampilan khusus kasir: formulir pencatatan meteran air tanpa data sensitif / tanpa tabel"""
+        # ===== HEADER KASIR =====
+        header = tk.Frame(self, bg=COLORS['white'], padx=25, pady=18,
+                          highlightbackground=COLORS['border_light'], highlightthickness=1)
+        header.pack(fill='x')
+
+        title_frame = tk.Frame(header, bg=COLORS['white'])
+        title_frame.pack(side='left')
+
+        tk.Label(
+            title_frame, text=f"{ICONS.get('flowmeter', '⏱️')}  Catat Meteran Air",
+            font=FONTS['title'], bg=COLORS['white'], fg=COLORS['primary_dark']
+        ).pack(anchor='w')
+
+        tk.Label(
+            title_frame, text="Pencatatan angka meteran fisik (kilometer air) awal & akhir shift",
+            font=FONTS['small'], bg=COLORS['white'], fg=COLORS['text_medium']
+        ).pack(anchor='w', pady=(3, 0))
+
+        # Kontainer scrollable untuk formulir agar responsif di segala ukuran layar
+        canvas = tk.Canvas(self, bg=COLORS['bg_light'], highlightthickness=0)
+        scrollbar = ttk.Scrollbar(self, orient='vertical', command=canvas.yview)
+        scrollable_frame = tk.Frame(canvas, bg=COLORS['bg_light'])
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        canvas.bind('<Configure>', _on_canvas_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+
+        # Bind scroll mousewheel
+        def _on_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        canvas.bind("<MouseWheel>", _on_mousewheel)
+        scrollable_frame.bind("<MouseWheel>", _on_mousewheel)
+
+        # Kartu Formulir di tengah
+        center_container = tk.Frame(scrollable_frame, bg=COLORS['bg_light'], pady=20)
+        center_container.pack(fill='both', expand=True)
+
+        card = tk.Frame(center_container, bg=COLORS['white'], padx=32, pady=24,
+                        highlightbackground=COLORS['border_light'], highlightthickness=1)
+        card.pack(anchor='center', pady=10)
+
+        # --- Row 1: Tanggal, Nama Kasir, Petugas ---
+        top_row = tk.Frame(card, bg=COLORS['white'])
+        top_row.pack(fill='x', pady=(0, 16))
+
+        # Tanggal
+        t_col1 = tk.Frame(top_row, bg=COLORS['white'])
+        t_col1.pack(side='left', fill='x', expand=True, padx=(0, 6))
+        tk.Label(t_col1, text="Tanggal", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_dark']).pack(anchor='w')
+        self.kasir_date_var = tk.StringVar(value=date.today().strftime("%Y-%m-%d"))
+        tk.Entry(t_col1, textvariable=self.kasir_date_var, font=FONTS['input'], relief='solid', bd=1, bg=COLORS['bg_light']).pack(fill='x', ipady=4)
+
+        # Nama Kasir (otomatis mengikuti login dan tidak dapat diubah)
+        t_col2 = tk.Frame(top_row, bg=COLORS['white'])
+        t_col2.pack(side='left', fill='x', expand=True, padx=3)
+        tk.Label(t_col2, text="Nama Kasir", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_dark']).pack(anchor='w')
+        self.kasir_shift_var = tk.StringVar(value=self.user.get('full_name', 'Kasir'))
+        shift_entry = tk.Entry(t_col2, textvariable=self.kasir_shift_var, font=FONTS['input'],
+                               relief='solid', bd=1, bg='#F0F0F0', state='readonly')
+        shift_entry.pack(fill='x', ipady=4)
+
+        # Petugas
+        t_col3 = tk.Frame(top_row, bg=COLORS['white'])
+        t_col3.pack(side='left', fill='x', expand=True, padx=(6, 0))
+        tk.Label(t_col3, text="Petugas", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_dark']).pack(anchor='w')
+        self.kasir_petugas_var = tk.StringVar(value=self.user.get('full_name', 'Kasir'))
+        tk.Entry(t_col3, textvariable=self.kasir_petugas_var, font=FONTS['input'], relief='solid', bd=1, bg=COLORS['bg_light']).pack(fill='x', ipady=4)
+
+        # --- Card 1: Air Bio Energi ---
+        bio_box = tk.LabelFrame(card, text="  🚰 Air Bio Energi  ",
+                                font=FONTS['body_bold'], fg=COLORS['primary_dark'], bg=COLORS['white'],
+                                padx=16, pady=12, bd=1, relief='solid')
+        bio_box.pack(fill='x', pady=(0, 16))
+
+        b_row = tk.Frame(bio_box, bg=COLORS['white'])
+        b_row.pack(fill='x')
+
+        # Bio Meter Awal
+        b_col1 = tk.Frame(b_row, bg=COLORS['white'])
+        b_col1.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        tk.Label(b_col1, text="Meter Awal (L):", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
+        self.kasir_bio_start_var = tk.StringVar(value="0")
+        self.kasir_bio_start_entry = tk.Entry(b_col1, textvariable=self.kasir_bio_start_var, font=('Segoe UI', 12, 'bold'),
+                                              relief='solid', bd=1, bg='#F0F0F0', state='readonly', justify='right')
+        self.kasir_bio_start_entry.pack(fill='x', ipady=4)
+
+        # Bio Meter Akhir
+        b_col2 = tk.Frame(b_row, bg=COLORS['white'])
+        b_col2.pack(side='left', fill='x', expand=True, padx=(8, 0))
+        tk.Label(b_col2, text="Meter Akhir (L):", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['primary']).pack(anchor='w')
+        self.kasir_bio_end_var = tk.StringVar(value="")
+        self.kasir_bio_end_entry = tk.Entry(b_col2, textvariable=self.kasir_bio_end_var, font=('Segoe UI', 12, 'bold'),
+                                            relief='solid', bd=1, bg='#E8F5E9', justify='right')
+        self.kasir_bio_end_entry.pack(fill='x', ipady=4)
+
+        # --- Card 2: Air RO (Reverse Osmosis) ---
+        ro_box = tk.LabelFrame(card, text="  💧 Air RO (Reverse Osmosis)  ",
+                               font=FONTS['body_bold'], fg=COLORS['info'], bg=COLORS['white'],
+                               padx=16, pady=12, bd=1, relief='solid')
+        ro_box.pack(fill='x', pady=(0, 16))
+
+        r_row = tk.Frame(ro_box, bg=COLORS['white'])
+        r_row.pack(fill='x')
+
+        # RO Meter Awal
+        r_col1 = tk.Frame(r_row, bg=COLORS['white'])
+        r_col1.pack(side='left', fill='x', expand=True, padx=(0, 8))
+        tk.Label(r_col1, text="Meter Awal (L):", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
+        self.kasir_ro_start_var = tk.StringVar(value="0")
+        self.kasir_ro_start_entry = tk.Entry(r_col1, textvariable=self.kasir_ro_start_var, font=('Segoe UI', 12, 'bold'),
+                                             relief='solid', bd=1, bg='#F0F0F0', state='readonly', justify='right')
+        self.kasir_ro_start_entry.pack(fill='x', ipady=4)
+
+        # RO Meter Akhir
+        r_col2 = tk.Frame(r_row, bg=COLORS['white'])
+        r_col2.pack(side='left', fill='x', expand=True, padx=(8, 0))
+        tk.Label(r_col2, text="Meter Akhir (L):", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['info']).pack(anchor='w')
+        self.kasir_ro_end_var = tk.StringVar(value="")
+        self.kasir_ro_end_entry = tk.Entry(r_col2, textvariable=self.kasir_ro_end_var, font=('Segoe UI', 12, 'bold'),
+                                           relief='solid', bd=1, bg='#E8F5E9', justify='right')
+        self.kasir_ro_end_entry.pack(fill='x', ipady=4)
+
+        # --- Catatan ---
+        tk.Label(card, text="Catatan (opsional, misal: cuci filter, bilas galon, dll):",
+                 font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_dark']).pack(anchor='w', pady=(0, 4))
+        self.kasir_notes_var = tk.StringVar(value="")
+        notes_entry = tk.Entry(card, textvariable=self.kasir_notes_var, font=FONTS['input'],
+                               relief='solid', bd=1, bg=COLORS['bg_light'])
+        notes_entry.pack(fill='x', ipady=4, pady=(0, 18))
+
+        # Navigasi tombol Enter antar kolom
+        self.kasir_bio_end_entry.bind('<Return>', lambda e: self.kasir_ro_end_entry.focus_set())
+        self.kasir_ro_end_entry.bind('<Return>', lambda e: notes_entry.focus_set())
+        notes_entry.bind('<Return>', lambda e: self._save_kasir_meter())
+
+        # --- Tombol Aksi ---
+        btn_frame = tk.Frame(card, bg=COLORS['white'])
+        btn_frame.pack(fill='x', pady=(4, 6))
+
+        save_btn = tk.Button(
+            btn_frame, text="  💾  Simpan Catatan Meteran  ", font=FONTS['button'],
+            bg=COLORS['primary'], fg=COLORS['text_white'], relief='flat',
+            cursor='hand2', command=self._save_kasir_meter, padx=22, pady=10
+        )
+        save_btn.pack(side='left', padx=(0, 10))
+        save_btn.bind('<Enter>', lambda e: save_btn.config(bg=COLORS['primary_hover']))
+        save_btn.bind('<Leave>', lambda e: save_btn.config(bg=COLORS['primary']))
+
+        reset_btn = tk.Button(
+            btn_frame, text="  🔄  Reset / Muat Ulang  ", font=FONTS['button'],
+            bg=COLORS['border'], fg=COLORS['text_dark'], relief='flat',
+            cursor='hand2', command=self._refresh_kasir_form, padx=16, pady=10
+        )
+        reset_btn.pack(side='left')
+
+        # Info footer
+        footer_frame = tk.Frame(card, bg='#F8F9FA', padx=12, pady=8, highlightbackground=COLORS['border_light'], highlightthickness=1)
+        footer_frame.pack(fill='x', pady=(16, 0))
+        tk.Label(
+            footer_frame,
+            text="💡 Tips: Masukkan angka meter akhir dari mesin flow meter sebelum pergantian shift atau saat tutup depo.",
+            font=FONTS['small'], bg='#F8F9FA', fg=COLORS['text_medium']
+        ).pack(anchor='w')
+
+    def _refresh_kasir_form(self):
+        """Segarkan form input kasir dengan pembacaan terbaru"""
+        if not hasattr(self, 'kasir_date_var'):
+            return
+
+        latest = db.get_latest_water_meter()
+
+        self.kasir_date_var.set(date.today().strftime("%Y-%m-%d"))
+        self.kasir_shift_var.set(self.user.get('full_name', 'Kasir'))
+        self.kasir_petugas_var.set(self.user.get('full_name', 'Kasir'))
+
+        def_bio = f"{latest['bio_meter_end']:g}" if latest else "0"
+        def_ro = f"{latest['ro_meter_end']:g}" if latest else "0"
+
+        self.kasir_bio_start_var.set(def_bio)
+        self.kasir_bio_end_var.set("")
+        self.kasir_ro_start_var.set(def_ro)
+        self.kasir_ro_end_var.set("")
+        self.kasir_notes_var.set("")
+
+        # Kunci meter awal jika sudah ada nilainya (> 0 atau catatan sebelumnya ada)
+        bio_has_val = (latest is not None and latest.get('bio_meter_end', 0) > 0) or parse_locale_number(def_bio) > 0
+        ro_has_val = (latest is not None and latest.get('ro_meter_end', 0) > 0) or parse_locale_number(def_ro) > 0
+        self.kasir_bio_start_entry.config(
+            state='readonly' if bio_has_val else 'normal',
+            bg='#F0F0F0' if bio_has_val else COLORS['bg_light']
+        )
+        self.kasir_ro_start_entry.config(
+            state='readonly' if ro_has_val else 'normal',
+            bg='#F0F0F0' if ro_has_val else COLORS['bg_light']
+        )
+        self.kasir_bio_end_entry.focus_set()
+
+    def _save_kasir_meter(self):
+        """Simpan catatan flow meter dari form kasir (tutup shift / akhir shift)"""
+        try:
+            rec_date = self.kasir_date_var.get().strip()
+            # 1. Nama kasir otomatis mengikuti user login dan tidak dapat diubah
+            s_name = self.user.get('full_name', 'Kasir')
+            u_name = self.kasir_petugas_var.get().strip() or s_name
+            notes_text = self.kasir_notes_var.get().strip()
+
+            if not rec_date:
+                messagebox.showwarning("Peringatan", "Tanggal harus diisi!")
+                return
+
+            b_start_str = self.kasir_bio_start_var.get().strip()
+            r_start_str = self.kasir_ro_start_var.get().strip()
+            b_end_str = self.kasir_bio_end_var.get().strip()
+            r_end_str = self.kasir_ro_end_var.get().strip()
+
+            if not b_start_str or not r_start_str:
+                messagebox.showwarning("Peringatan", "Meter awal Bio dan RO harus diisi!")
+                return
+
+            if not b_end_str or not r_end_str:
+                messagebox.showwarning("Peringatan", "Meter akhir Bio dan RO harus diisi!")
+                return
+
+            b_start = parse_locale_number(b_start_str)
+            r_start = parse_locale_number(r_start_str)
+            b_end = parse_locale_number(b_end_str)
+            r_end = parse_locale_number(r_end_str)
+
+            if b_end < b_start:
+                if not messagebox.askyesno(
+                    "Konfirmasi Angka Meteran",
+                    f"Meter akhir Bio ({b_end}) lebih kecil dari meter awal ({b_start}).\nApakah meteran sempat reset/rollover?"
+                ):
+                    return
+            if r_end < r_start:
+                if not messagebox.askyesno(
+                    "Konfirmasi Angka Meteran",
+                    f"Meter akhir RO ({r_end}) lebih kecil dari meter awal ({r_start}).\nApakah meteran sempat reset/rollover?"
+                ):
+                    return
+
+            # Mengambil harga otomatis tersinkronisasi dari master produk
+            synced = db.get_water_prices_from_products()
+            cur_bio_price = synced['bio_price']
+            cur_ro_price = synced['ro_price']
+
+            latest = db.get_latest_water_meter()
+            cur_bio_lpg = latest.get('bio_liters_per_gallon', 21.5) or 21.5 if latest else 21.5
+            cur_ro_lpg = latest.get('ro_liters_per_gallon', 20.5) or 20.5 if latest else 20.5
+
+            db.add_water_meter(
+                rec_date, s_name, self.user.get('id', 1), u_name,
+                b_start, b_end, r_start, r_end,
+                bio_lpg=cur_bio_lpg, bio_price=cur_bio_price,
+                ro_lpg=cur_ro_lpg, ro_price=cur_ro_price,
+                status='closed', notes=notes_text
+            )
+            messagebox.showinfo("Berhasil", "Catatan flow meter berhasil disimpan!")
+            self._refresh_kasir_form()
+
+        except ValueError:
+            messagebox.showerror("Error", "Pastikan angka kilometer air berupa angka valid (contoh: 12975.8)!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Gagal menyimpan catatan meteran:\n{e}")
+
+            self._refresh_kasir_form()
+
+        except ValueError:
+            messagebox.showerror("Error", "Pastikan angka kilometer air berupa angka valid (contoh: 12975.8)!")
+        except Exception as e:
+            messagebox.showerror("Error", f"Gagal menyimpan catatan meteran:\n{e}")
+
     def _reset_filter(self):
         self.date_from_var.set("")
         self.date_to_var.set("")
@@ -336,6 +629,11 @@ class FlowMeterView(tk.Frame):
 
     def refresh_data(self):
         """Memuat ulang data dari database ke tampilan tabel & kartu ringkasan"""
+        is_owner = self.user.get('role', '') == 'owner'
+        if not is_owner:
+            self._refresh_kasir_form()
+            return
+
         for item in self.tree.get_children():
             self.tree.delete(item)
 
@@ -346,6 +644,15 @@ class FlowMeterView(tk.Frame):
         records = db.get_water_meters(d_from, d_to, search)
         summary = db.get_water_meter_summary(d_from, d_to)
         is_owner = self.user.get('role', '') == 'owner'
+
+        # Sinkronisasi label judul harga di kartu KPI
+        synced_prices = db.get_water_prices_from_products()
+        if hasattr(self, 'bio_card_title'):
+            bio_p_text = format_currency(synced_prices['bio_price'])
+            self.bio_card_title.config(text=f"🚰 Air Bio Energi ({bio_p_text})" if is_owner else "🚰 Air Bio Energi")
+        if hasattr(self, 'ro_card_title'):
+            ro_p_text = format_currency(synced_prices['ro_price'])
+            self.ro_card_title.config(text=f"💧 Air RO ({ro_p_text})" if is_owner else "💧 Air RO")
 
         # Update KPI cards
         self.bio_liters_label.config(text=f"{format_decimal(summary['total_bio_liters'], 1)} L")
@@ -434,10 +741,13 @@ class FlowMeterView(tk.Frame):
 
     def _open_meter_form_dialog(self, title, existing_data=None):
         """Dialog formulir pengisian flow meter dengan kalkulasi live"""
+        is_owner = self.user.get('role', '') == 'owner'
+
         dialog = tk.Toplevel(self)
         dialog.title(title)
-        dialog.geometry("540x680")
-        dialog.minsize(480, 520)
+        dialog_h = 680 if is_owner else 490
+        dialog.geometry(f"540x{dialog_h}")
+        dialog.minsize(480, 420)
         dialog.resizable(True, True)
         dialog.configure(bg=COLORS['white'])
         dialog.transient(self)
@@ -445,7 +755,7 @@ class FlowMeterView(tk.Frame):
 
         dialog.update_idletasks()
         x = (dialog.winfo_screenwidth() // 2) - 270
-        y = (dialog.winfo_screenheight() // 2) - 340
+        y = (dialog.winfo_screenheight() // 2) - (dialog_h // 2)
         dialog.geometry(f'+{x}+{y}')
 
         # Header
@@ -465,14 +775,15 @@ class FlowMeterView(tk.Frame):
 
         # Nilai awal / default
         latest = db.get_latest_water_meter()
-        is_owner = self.user.get('role', '') == 'owner'
 
         # Ambil daftar nama kasir dari database
         all_users = db.get_all_users()
         kasir_names = [u['full_name'] for u in all_users if u['role'] == 'kasir' and u['is_active']]
 
         def_date = existing_data['record_date'] if existing_data else date.today().strftime("%Y-%m-%d")
-        def_shift = existing_data['shift_name'] if existing_data else (kasir_names[0] if kasir_names else self.user.get('full_name', 'Kasir'))
+        def_shift = existing_data['shift_name'] if existing_data else (kasir_names[0] if (kasir_names and is_owner) else self.user.get('full_name', 'Kasir'))
+        if not is_owner:
+            def_shift = self.user.get('full_name', 'Kasir')
         def_user = existing_data['user_name'] if existing_data else self.user.get('full_name', 'Kasir')
 
         def_bio_start = f"{existing_data['bio_meter_start']:g}" if existing_data else (f"{latest['bio_meter_end']:g}" if latest else "0")
@@ -500,9 +811,14 @@ class FlowMeterView(tk.Frame):
         t_col2.pack(side='left', fill='x', expand=True, padx=3)
         tk.Label(t_col2, text="Nama Kasir", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_dark']).pack(anchor='w')
         shift_var = tk.StringVar(value=def_shift)
-        shift_combo = ttk.Combobox(t_col2, textvariable=shift_var, font=FONTS['input'],
-                                   values=kasir_names)
-        shift_combo.pack(fill='x', ipady=3)
+        if is_owner:
+            shift_combo = ttk.Combobox(t_col2, textvariable=shift_var, font=FONTS['input'],
+                                       values=kasir_names)
+            shift_combo.pack(fill='x', ipady=3)
+        else:
+            shift_entry = tk.Entry(t_col2, textvariable=shift_var, font=FONTS['input'],
+                                   relief='solid', bd=1, bg='#F0F0F0', state='readonly')
+            shift_entry.pack(fill='x', ipady=4)
 
         # Petugas
         t_col3 = tk.Frame(top_row, bg=COLORS['white'])
@@ -517,32 +833,36 @@ class FlowMeterView(tk.Frame):
                                 padx=12, pady=8, bd=1, relief='solid')
         bio_box.pack(fill='x', pady=(0, 10))
 
-        # Row harga & liter per galon Bio
-        bio_config_row = tk.Frame(bio_box, bg=COLORS['white'])
-        bio_config_row.pack(fill='x', pady=(0, 6))
+        # Ambil harga air tersinkronisasi dari produk
+        synced_prices = db.get_water_prices_from_products()
 
-        bc_col1 = tk.Frame(bio_config_row, bg=COLORS['white'])
-        bc_col1.pack(side='left', fill='x', expand=True, padx=(0, 6) if is_owner else 0)
-        tk.Label(bc_col1, text="Liter per Galon:", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
-        def_bio_lpg = f"{existing_data['bio_liters_per_gallon']:g}" if existing_data and existing_data.get('bio_liters_per_gallon') else "21.5"
-        bio_lpg_var = tk.StringVar(value=def_bio_lpg)
-        bio_lpg_entry = tk.Entry(bc_col1, textvariable=bio_lpg_var, font=FONTS['input'],
-                                 relief='solid', bd=1, bg=COLORS['bg_light'] if is_owner else '#E0E0E0', justify='right')
-        bio_lpg_entry.pack(fill='x', ipady=3)
-        if not is_owner:
-            bio_lpg_entry.config(state='readonly')
-
+        # Row harga & liter per galon Bio (Hanya untuk Owner)
         if is_owner:
+            bio_config_row = tk.Frame(bio_box, bg=COLORS['white'])
+            bio_config_row.pack(fill='x', pady=(0, 6))
+
+            bc_col1 = tk.Frame(bio_config_row, bg=COLORS['white'])
+            bc_col1.pack(side='left', fill='x', expand=True, padx=(0, 6))
+            tk.Label(bc_col1, text="Liter per Galon:", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
+            def_bio_lpg = f"{existing_data['bio_liters_per_gallon']:g}" if existing_data and existing_data.get('bio_liters_per_gallon') else "21.5"
+            bio_lpg_var = tk.StringVar(value=def_bio_lpg)
+            bio_lpg_entry = tk.Entry(bc_col1, textvariable=bio_lpg_var, font=FONTS['input'],
+                                     relief='solid', bd=1, bg=COLORS['bg_light'], justify='right')
+            bio_lpg_entry.pack(fill='x', ipady=3)
+
             bc_col2 = tk.Frame(bio_config_row, bg=COLORS['white'])
             bc_col2.pack(side='left', fill='x', expand=True, padx=(6, 0))
             tk.Label(bc_col2, text="Harga per Galon (Rp):", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
-            def_bio_price = f"{existing_data['bio_price_per_gallon']:g}" if existing_data and existing_data.get('bio_price_per_gallon') else "5000"
+            def_bio_price = f"{existing_data['bio_price_per_gallon']:g}" if existing_data and existing_data.get('bio_price_per_gallon') else f"{synced_prices['bio_price']:g}"
             bio_price_var = tk.StringVar(value=def_bio_price)
             bio_price_entry = tk.Entry(bc_col2, textvariable=bio_price_var, font=FONTS['input'],
                                        relief='solid', bd=1, bg=COLORS['bg_light'], justify='right')
             bio_price_entry.pack(fill='x', ipady=3)
+            tk.Label(bc_col2, text=f"⚡ Sinkron Produk: {format_currency(synced_prices['bio_price'])}", font=FONTS['small'], bg=COLORS['white'], fg=COLORS['primary']).pack(anchor='w')
         else:
-            def_bio_price = f"{existing_data['bio_price_per_gallon']:g}" if existing_data and existing_data.get('bio_price_per_gallon') else "5000"
+            def_bio_lpg = f"{existing_data['bio_liters_per_gallon']:g}" if existing_data and existing_data.get('bio_liters_per_gallon') else "21.5"
+            bio_lpg_var = tk.StringVar(value=def_bio_lpg)
+            def_bio_price = f"{existing_data['bio_price_per_gallon']:g}" if existing_data and existing_data.get('bio_price_per_gallon') else f"{synced_prices['bio_price']:g}"
             bio_price_var = tk.StringVar(value=def_bio_price)
 
         b_row = tk.Frame(bio_box, bg=COLORS['white'])
@@ -553,9 +873,15 @@ class FlowMeterView(tk.Frame):
         b_col1.pack(side='left', fill='x', expand=True, padx=(0, 6))
         tk.Label(b_col1, text="Meter Awal (L):", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
         bio_start_var = tk.StringVar(value=def_bio_start)
+        bio_has_val = parse_locale_number(def_bio_start) > 0 or (latest is not None and latest.get('bio_meter_end', 0) > 0)
         bio_start_entry = tk.Entry(b_col1, textvariable=bio_start_var, font=('Segoe UI', 12, 'bold'),
-                                   relief='solid', bd=1, bg=COLORS['bg_light'], justify='right')
+                                   relief='solid', bd=1,
+                                   bg='#F0F0F0' if bio_has_val else COLORS['bg_light'],
+                                   state='readonly' if bio_has_val else 'normal',
+                                   justify='right')
         bio_start_entry.pack(fill='x', ipady=4)
+        if is_owner and bio_has_val:
+            bio_start_entry.bind('<Double-Button-1>', lambda e: bio_start_entry.config(state='normal', bg=COLORS['bg_light']))
 
         # Bio Meter Akhir
         b_col2 = tk.Frame(b_row, bg=COLORS['white'])
@@ -566,14 +892,11 @@ class FlowMeterView(tk.Frame):
                                  relief='solid', bd=1, bg='#E8F5E9', justify='right')
         bio_end_entry.pack(fill='x', ipady=4)
 
-        # Bio Live Feedback
+        # Bio Live Feedback (Hanya untuk Owner)
         if is_owner:
             bio_calc_label = tk.Label(bio_box, text="Liter Keluar: 0 L  •  Galon: 0 galon  •  Omzet: Rp 0",
                                       font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['primary'])
-        else:
-            bio_calc_label = tk.Label(bio_box, text="Liter Keluar: 0 L  •  Galon: 0 galon",
-                                      font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['primary'])
-        bio_calc_label.pack(anchor='w', pady=(6, 0))
+            bio_calc_label.pack(anchor='w', pady=(6, 0))
 
         # --- Card 2: Air RO (Reverse Osmosis) ---
         ro_box = tk.LabelFrame(form, text="  💧 Air RO (Reverse Osmosis)  ",
@@ -581,32 +904,33 @@ class FlowMeterView(tk.Frame):
                                padx=12, pady=8, bd=1, relief='solid')
         ro_box.pack(fill='x', pady=(0, 10))
 
-        # Row harga & liter per galon RO
-        ro_config_row = tk.Frame(ro_box, bg=COLORS['white'])
-        ro_config_row.pack(fill='x', pady=(0, 6))
-
-        rc_col1 = tk.Frame(ro_config_row, bg=COLORS['white'])
-        rc_col1.pack(side='left', fill='x', expand=True, padx=(0, 6) if is_owner else 0)
-        tk.Label(rc_col1, text="Liter per Galon:", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
-        def_ro_lpg = f"{existing_data['ro_liters_per_gallon']:g}" if existing_data and existing_data.get('ro_liters_per_gallon') else "20.5"
-        ro_lpg_var = tk.StringVar(value=def_ro_lpg)
-        ro_lpg_entry = tk.Entry(rc_col1, textvariable=ro_lpg_var, font=FONTS['input'],
-                                relief='solid', bd=1, bg=COLORS['bg_light'] if is_owner else '#E0E0E0', justify='right')
-        ro_lpg_entry.pack(fill='x', ipady=3)
-        if not is_owner:
-            ro_lpg_entry.config(state='readonly')
-
+        # Row harga & liter per galon RO (Hanya untuk Owner)
         if is_owner:
+            ro_config_row = tk.Frame(ro_box, bg=COLORS['white'])
+            ro_config_row.pack(fill='x', pady=(0, 6))
+
+            rc_col1 = tk.Frame(ro_config_row, bg=COLORS['white'])
+            rc_col1.pack(side='left', fill='x', expand=True, padx=(0, 6))
+            tk.Label(rc_col1, text="Liter per Galon:", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
+            def_ro_lpg = f"{existing_data['ro_liters_per_gallon']:g}" if existing_data and existing_data.get('ro_liters_per_gallon') else "20.5"
+            ro_lpg_var = tk.StringVar(value=def_ro_lpg)
+            ro_lpg_entry = tk.Entry(rc_col1, textvariable=ro_lpg_var, font=FONTS['input'],
+                                    relief='solid', bd=1, bg=COLORS['bg_light'], justify='right')
+            ro_lpg_entry.pack(fill='x', ipady=3)
+
             rc_col2 = tk.Frame(ro_config_row, bg=COLORS['white'])
             rc_col2.pack(side='left', fill='x', expand=True, padx=(6, 0))
             tk.Label(rc_col2, text="Harga per Galon (Rp):", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
-            def_ro_price = f"{existing_data['ro_price_per_gallon']:g}" if existing_data and existing_data.get('ro_price_per_gallon') else "10000"
+            def_ro_price = f"{existing_data['ro_price_per_gallon']:g}" if existing_data and existing_data.get('ro_price_per_gallon') else f"{synced_prices['ro_price']:g}"
             ro_price_var = tk.StringVar(value=def_ro_price)
             ro_price_entry = tk.Entry(rc_col2, textvariable=ro_price_var, font=FONTS['input'],
                                       relief='solid', bd=1, bg=COLORS['bg_light'], justify='right')
             ro_price_entry.pack(fill='x', ipady=3)
+            tk.Label(rc_col2, text=f"⚡ Sinkron Produk: {format_currency(synced_prices['ro_price'])}", font=FONTS['small'], bg=COLORS['white'], fg=COLORS['info']).pack(anchor='w')
         else:
-            def_ro_price = f"{existing_data['ro_price_per_gallon']:g}" if existing_data and existing_data.get('ro_price_per_gallon') else "10000"
+            def_ro_lpg = f"{existing_data['ro_liters_per_gallon']:g}" if existing_data and existing_data.get('ro_liters_per_gallon') else "20.5"
+            ro_lpg_var = tk.StringVar(value=def_ro_lpg)
+            def_ro_price = f"{existing_data['ro_price_per_gallon']:g}" if existing_data and existing_data.get('ro_price_per_gallon') else f"{synced_prices['ro_price']:g}"
             ro_price_var = tk.StringVar(value=def_ro_price)
 
         r_row = tk.Frame(ro_box, bg=COLORS['white'])
@@ -617,9 +941,15 @@ class FlowMeterView(tk.Frame):
         r_col1.pack(side='left', fill='x', expand=True, padx=(0, 6))
         tk.Label(r_col1, text="Meter Awal (L):", font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['text_medium']).pack(anchor='w')
         ro_start_var = tk.StringVar(value=def_ro_start)
+        ro_has_val = parse_locale_number(def_ro_start) > 0 or (latest is not None and latest.get('ro_meter_end', 0) > 0)
         ro_start_entry = tk.Entry(r_col1, textvariable=ro_start_var, font=('Segoe UI', 12, 'bold'),
-                                  relief='solid', bd=1, bg=COLORS['bg_light'], justify='right')
+                                  relief='solid', bd=1,
+                                  bg='#F0F0F0' if ro_has_val else COLORS['bg_light'],
+                                  state='readonly' if ro_has_val else 'normal',
+                                  justify='right')
         ro_start_entry.pack(fill='x', ipady=4)
+        if is_owner and ro_has_val:
+            ro_start_entry.bind('<Double-Button-1>', lambda e: ro_start_entry.config(state='normal', bg=COLORS['bg_light']))
 
         # RO Meter Akhir
         r_col2 = tk.Frame(r_row, bg=COLORS['white'])
@@ -630,29 +960,23 @@ class FlowMeterView(tk.Frame):
                                 relief='solid', bd=1, bg='#E8F5E9', justify='right')
         ro_end_entry.pack(fill='x', ipady=4)
 
-        # RO Live Feedback
+        # RO Live Feedback (Hanya untuk Owner)
         if is_owner:
             ro_calc_label = tk.Label(ro_box, text="Liter Keluar: 0 L  •  Galon: 0 galon  •  Omzet: Rp 0",
                                      font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['info'])
-        else:
-            ro_calc_label = tk.Label(ro_box, text="Liter Keluar: 0 L  •  Galon: 0 galon",
-                                     font=FONTS['small_bold'], bg=COLORS['white'], fg=COLORS['info'])
-        ro_calc_label.pack(anchor='w', pady=(6, 0))
+            ro_calc_label.pack(anchor='w', pady=(6, 0))
 
-        # --- Card 3: Ringkasan Total Real-Time ---
-        sum_box = tk.Frame(form, bg=COLORS['info_bg'], padx=12, pady=8,
-                           highlightbackground=COLORS['border_light'], highlightthickness=1)
-        sum_box.pack(fill='x', pady=(0, 10))
-
-        tk.Label(sum_box, text="📊 Total Gabungan Real-Time:", font=FONTS['small_bold'],
-                 bg=COLORS['info_bg'], fg=COLORS['primary_dark']).pack(anchor='w')
+        # --- Card 3: Ringkasan Total Real-Time (Hanya untuk Owner) ---
         if is_owner:
+            sum_box = tk.Frame(form, bg=COLORS['info_bg'], padx=12, pady=8,
+                               highlightbackground=COLORS['border_light'], highlightthickness=1)
+            sum_box.pack(fill='x', pady=(0, 10))
+
+            tk.Label(sum_box, text="📊 Total Gabungan Real-Time:", font=FONTS['small_bold'],
+                     bg=COLORS['info_bg'], fg=COLORS['primary_dark']).pack(anchor='w')
             total_live_label = tk.Label(sum_box, text="Total: 0 Liter  •  0 Galon  •  Omzet: Rp 0",
                                         font=FONTS['body_bold'], bg=COLORS['info_bg'], fg=COLORS['success'])
-        else:
-            total_live_label = tk.Label(sum_box, text="Total: 0 Liter  •  0 Galon",
-                                        font=FONTS['body_bold'], bg=COLORS['info_bg'], fg=COLORS['success'])
-        total_live_label.pack(anchor='w', pady=(2, 0))
+            total_live_label.pack(anchor='w', pady=(2, 0))
 
         # --- Catatan ---
         tk.Label(form, text="Catatan (opsional, misal: cuci filter, bilas galon, dll):",
@@ -662,8 +986,10 @@ class FlowMeterView(tk.Frame):
                                relief='solid', bd=1, bg=COLORS['bg_light'])
         notes_entry.pack(fill='x', ipady=4)
 
-        # Live calculation callback
+        # Live calculation callback (hanya aktif untuk owner)
         def recalculate(*args):
+            if not is_owner:
+                return
             try:
                 b_start = parse_locale_number(bio_start_var.get())
                 b_end = parse_locale_number(bio_end_var.get()) if bio_end_var.get().strip() else b_start
@@ -671,9 +997,9 @@ class FlowMeterView(tk.Frame):
                 r_end = parse_locale_number(ro_end_var.get()) if ro_end_var.get().strip() else r_start
 
                 cur_bio_lpg = parse_locale_number(bio_lpg_var.get()) if bio_lpg_var.get().strip() else 21.5
-                cur_bio_price = parse_locale_number(bio_price_var.get()) if bio_price_var.get().strip() else 5000
+                cur_bio_price = parse_locale_number(bio_price_var.get()) if bio_price_var.get().strip() else synced_prices['bio_price']
                 cur_ro_lpg = parse_locale_number(ro_lpg_var.get()) if ro_lpg_var.get().strip() else 20.5
-                cur_ro_price = parse_locale_number(ro_price_var.get()) if ro_price_var.get().strip() else 10000
+                cur_ro_price = parse_locale_number(ro_price_var.get()) if ro_price_var.get().strip() else synced_prices['ro_price']
 
                 b_liters = max(0.0, round(b_end - b_start, 2)) if bio_end_var.get().strip() else 0.0
                 b_gal = round(b_liters / cur_bio_lpg, 2) if cur_bio_lpg > 0 else 0.0
@@ -687,41 +1013,31 @@ class FlowMeterView(tk.Frame):
                 tot_gal = round(b_gal + r_gal, 2)
                 tot_rev = b_rev + r_rev
 
-                if is_owner:
-                    bio_calc_label.config(
-                        text=f"Liter Keluar: {format_decimal(b_liters, 1)} L  •  {format_decimal(b_gal, 2)} Galon  •  {format_currency(b_rev)}"
-                    )
-                    ro_calc_label.config(
-                        text=f"Liter Keluar: {format_decimal(r_liters, 1)} L  •  {format_decimal(r_gal, 2)} Galon  •  {format_currency(r_rev)}"
-                    )
-                    total_live_label.config(
-                        text=f"Total: {format_decimal(tot_liters, 1)} Liter  •  {format_decimal(tot_gal, 2)} Galon  •  {format_currency(tot_rev)}"
-                    )
-                else:
-                    bio_calc_label.config(
-                        text=f"Liter Keluar: {format_decimal(b_liters, 1)} L  •  {format_decimal(b_gal, 2)} Galon"
-                    )
-                    ro_calc_label.config(
-                        text=f"Liter Keluar: {format_decimal(r_liters, 1)} L  •  {format_decimal(r_gal, 2)} Galon"
-                    )
-                    total_live_label.config(
-                        text=f"Total: {format_decimal(tot_liters, 1)} Liter  •  {format_decimal(tot_gal, 2)} Galon"
-                    )
-            except ValueError:
+                bio_calc_label.config(
+                    text=f"Liter Keluar: {format_decimal(b_liters, 1)} L  •  {format_decimal(b_gal, 2)} Galon  •  {format_currency(b_rev)}"
+                )
+                ro_calc_label.config(
+                    text=f"Liter Keluar: {format_decimal(r_liters, 1)} L  •  {format_decimal(r_gal, 2)} Galon  •  {format_currency(r_rev)}"
+                )
+                total_live_label.config(
+                    text=f"Total: {format_decimal(tot_liters, 1)} Liter  •  {format_decimal(tot_gal, 2)} Galon  •  {format_currency(tot_rev)}"
+                )
+            except (ValueError, Exception):
                 pass
 
-        bio_start_var.trace_add('write', recalculate)
-        bio_end_var.trace_add('write', recalculate)
-        ro_start_var.trace_add('write', recalculate)
-        ro_end_var.trace_add('write', recalculate)
-        bio_lpg_var.trace_add('write', recalculate)
-        bio_price_var.trace_add('write', recalculate)
-        ro_lpg_var.trace_add('write', recalculate)
-        ro_price_var.trace_add('write', recalculate)
-        recalculate()
+        if is_owner:
+            bio_start_var.trace_add('write', recalculate)
+            bio_end_var.trace_add('write', recalculate)
+            ro_start_var.trace_add('write', recalculate)
+            ro_end_var.trace_add('write', recalculate)
+            bio_lpg_var.trace_add('write', recalculate)
+            bio_price_var.trace_add('write', recalculate)
+            ro_lpg_var.trace_add('write', recalculate)
+            ro_price_var.trace_add('write', recalculate)
+            recalculate()
 
         # Fokus input
-        if existing_data and existing_data['status'] == 'open':
+        if (existing_data and existing_data['status'] == 'open') or bio_has_val:
             bio_end_entry.focus_set()
         else:
             bio_start_entry.focus_set()
@@ -730,8 +1046,8 @@ class FlowMeterView(tk.Frame):
         def save():
             try:
                 rec_date = date_var.get().strip()
-                s_name = shift_var.get().strip() or self.user.get('full_name', 'Kasir')
-                u_name = user_var.get().strip() or self.user.get('full_name', 'Kasir')
+                s_name = self.user.get('full_name', 'Kasir') if not is_owner else (shift_var.get().strip() or self.user.get('full_name', 'Kasir'))
+                u_name = user_var.get().strip() or s_name
                 notes_text = notes_var.get().strip()
 
                 if not rec_date:
@@ -743,9 +1059,9 @@ class FlowMeterView(tk.Frame):
 
                 # Parse editable lpg & price values
                 cur_bio_lpg = parse_locale_number(bio_lpg_var.get()) if bio_lpg_var.get().strip() else 21.5
-                cur_bio_price = parse_locale_number(bio_price_var.get()) if bio_price_var.get().strip() else 5000.0
+                cur_bio_price = parse_locale_number(bio_price_var.get()) if bio_price_var.get().strip() else synced_prices['bio_price']
                 cur_ro_lpg = parse_locale_number(ro_lpg_var.get()) if ro_lpg_var.get().strip() else 20.5
-                cur_ro_price = parse_locale_number(ro_price_var.get()) if ro_price_var.get().strip() else 10000.0
+                cur_ro_price = parse_locale_number(ro_price_var.get()) if ro_price_var.get().strip() else synced_prices['ro_price']
 
                 has_end = bool(bio_end_var.get().strip() and ro_end_var.get().strip())
                 status = 'closed' if has_end else 'open'
